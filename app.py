@@ -95,19 +95,61 @@ def create_customers_table():
 
 @app.route('/')
 def index():
-    """Displays a list of all customers."""
+    """Displays a paginated list of all customers, with search."""
+    search_term = request.args.get('search', '').strip()
+    try:
+        page = int(request.args.get('page', 1))
+    except ValueError:
+        page = 1
+
+    per_page = 20
+    offset = (page - 1) * per_page
+
     conn = get_db_connection()
     customers = []
+    total_customers = 0
+
     if conn:
         cursor = get_cursor(conn)
-        cursor.execute("SELECT * FROM customers ORDER BY company_name")
-        # Fetchall returns a list of pyodbc.Row objects
+
+        # Base query and params for filtering
+        where_clause = ""
+        params = []
+        if search_term:
+            where_clause = """
+            WHERE company_name LIKE ?
+               OR short_name LIKE ?
+               OR contact_person LIKE ?
+               OR email LIKE ?
+               OR coid LIKE ?
+            """
+            search_pattern = f"%{search_term}%"
+            params.extend([search_pattern] * 5)
+
+        # Get total count for pagination
+        count_sql = f"SELECT COUNT(*) FROM customers {where_clause}"
+        cursor.execute(count_sql, params)
+        total_customers = cursor.fetchone()[0]
+
+        # Get paginated results
+        sql_query = f"""
+        SELECT * FROM customers
+        {where_clause}
+        ORDER BY company_name
+        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """
+        paginated_params = params + [offset, per_page]
+        cursor.execute(sql_query, paginated_params)
+
         rows = cursor.fetchall()
-        # Convert rows to list of dictionaries
         columns = [column[0] for column in cursor.description]
         customers = [dict(zip(columns, row)) for row in rows]
         conn.close()
-    return render_template('index.html', customers=customers)
+
+    total_pages = (total_customers + per_page - 1) // per_page
+
+    return render_template('index.html', customers=customers, search_term=search_term,
+                           page=page, total_pages=total_pages)
 
 @app.route('/add', methods=['GET', 'POST'])
 def add_customer():
