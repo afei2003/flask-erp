@@ -7,12 +7,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'a_default_secret_key_for_development')
 
 # --- Database Configuration ---
-# Load from environment variables with default values for development
-DB_SERVER = os.environ.get('DB_SERVER', '192.168.100.100,2025')
-DB_NAME = os.environ.get('DB_NAME', 'secLab')
-DB_USERNAME = os.environ.get('DB_USERNAME', 'sa')
-DB_PASSWORD = os.environ.get('DB_PASSWORD') # No default for password
-DB_DRIVER = os.environ.get('DB_DRIVER', '{ODBC Driver 17 for SQL Server}')
+# Load from environment variables. These must be set in the environment.
+DB_SERVER = os.environ.get('DB_SERVER')
+DB_NAME = os.environ.get('DB_NAME')
+DB_USERNAME = os.environ.get('DB_USERNAME')
+DB_PASSWORD = os.environ.get('DB_PASSWORD')
+DB_DRIVER = os.environ.get('DB_DRIVER', '{ODBC Driver 17 for SQL Server}') # Keep a default for the driver as it's less sensitive
 
 def get_db_connection():
     """Creates and returns a connection to the SQL Server database."""
@@ -47,49 +47,6 @@ def get_cursor(conn):
 # 2. Main Routes (CRUD)
 # 3. Helper functions
 # 4. App execution
-
-# --- 1. Database Initialization ---
-def create_customers_table():
-    """Creates the 'customers' table if it does not already exist."""
-    conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            table_check_query = "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='customers' and xtype='U') CREATE TABLE customers (...)"
-
-            # More robust check
-            cursor.execute("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'customers'")
-            if cursor.fetchone()[0] == 0:
-                print("Creating 'customers' table...")
-                create_table_query = """
-                CREATE TABLE customers (
-                    id INT PRIMARY KEY IDENTITY(1,1),
-                    coid NVARCHAR(50) NOT NULL,
-                    company_name NVARCHAR(255) NOT NULL,
-                    short_name NVARCHAR(100),
-                    contact_person NVARCHAR(255),
-                    phone NVARCHAR(50),
-                    email NVARCHAR(255),
-                    address_line1 NVARCHAR(255),
-                    address_line2 NVARCHAR(255),
-                    city NVARCHAR(100),
-                    state NVARCHAR(100),
-                    postal_code NVARCHAR(20),
-                    country NVARCHAR(100),
-                    is_active BIT DEFAULT 1,
-                    date_created DATETIME DEFAULT GETDATE(),
-                    date_updated DATETIME DEFAULT GETDATE()
-                );
-                """
-                cursor.execute(create_table_query)
-                conn.commit()
-                print("'customers' table created successfully.")
-            else:
-                print("'customers' table already exists.")
-        except pyodbc.Error as e:
-            print(f"Error creating table: {e}")
-        finally:
-            conn.close()
 
 # --- 2. Main Routes (CRUD) ---
 
@@ -254,8 +211,101 @@ def delete_customer(customer_id):
 
     return redirect(url_for('index'))
 
+@app.route('/orders')
+def order_payments():
+    """Displays a paginated list of order payment information, with search."""
+    search_params = {
+        'client': request.args.get('client', '').strip(),
+        'short_name': request.args.get('short_name', '').strip(),
+        'coid': request.args.get('coid', '').strip(),
+        'start_date': request.args.get('start_date', '').strip(),
+        'end_date': request.args.get('end_date', '').strip(),
+    }
+
+    try:
+        page = int(request.args.get('page', 1))
+    except ValueError:
+        page = 1
+
+    per_page = 20
+    offset = (page - 1) * per_page
+
+    conn = get_db_connection()
+    orders = []
+    total_orders = 0
+
+    if conn:
+        cursor = get_cursor(conn)
+
+        # Base query
+        base_query = "from v_step_pay_all"
+
+        # Build WHERE clause
+        where_conditions = []
+        params = []
+
+        if search_params['client']:
+            where_conditions.append("client LIKE ?")
+            params.append(f"%{search_params['client']}%")
+        if search_params['short_name']:
+            where_conditions.append("short_name LIKE ?")
+            params.append(f"%{search_params['short_name']}%")
+        if search_params['coid']:
+            where_conditions.append("coid LIKE ?")
+            params.append(f"%{search_params['coid']}%")
+        if search_params['start_date']:
+            where_conditions.append("updated_at >= ?")
+            params.append(search_params['start_date'])
+        if search_params['end_date']:
+            # Add 1 day to end_date to make it inclusive
+            # This is a simple approach; a more robust one would parse and add a day
+            where_conditions.append("updated_at < dateadd(day, 1, ?)")
+            params.append(search_params['end_date'])
+
+        where_clause = ""
+        if where_conditions:
+            where_clause = " WHERE " + " AND ".join(where_conditions)
+
+        # Get total count for pagination
+        count_sql = f"SELECT COUNT(*) {base_query} {where_clause}"
+        try:
+            cursor.execute(count_sql, params)
+            total_orders = cursor.fetchone()[0]
+        except pyodbc.Error as e:
+            flash(f"Error fetching order count: {e}", "danger")
+            total_orders = 0
+
+        # Get paginated results
+        # Correcting the typo from the user's query: updated_byfrom -> updated_by from
+        select_fields = "CONVERT(varchar, created_at, 23) as created_at, client, short_name, coid, order_id, name, model, packaging, quantity, unit_price, count_pass, count_neg, note, mini_total, discount, total_paid, pay_method, right (invoice_id, 5) as invoice_id, paid_at, updated_at, updated_by"
+
+        paginated_sql = f"""
+        SELECT {select_fields} {base_query} {where_clause}
+        ORDER BY updated_at ASC
+        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """
+        paginated_params = params + [offset, per_page]
+
+        try:
+            cursor.execute(paginated_sql, paginated_params)
+            rows = cursor.fetchall()
+            columns = [column[0] for column in cursor.description]
+            orders = [dict(zip(columns, row)) for row in rows]
+        except pyodbc.Error as e:
+            flash(f"Error fetching orders: {e}", "danger")
+            orders = []
+
+        conn.close()
+
+    total_pages = (total_orders + per_page - 1) // per_page
+
+    return render_template('order_payments.html',
+                           orders=orders,
+                           search_params=search_params,
+                           page=page,
+                           total_pages=total_pages)
+
+
 # --- 4. App execution ---
 if __name__ == '__main__':
-    with app.app_context():
-        create_customers_table()
     app.run(debug=True, host='0.0.0.0', port=5000)
