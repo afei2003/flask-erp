@@ -98,14 +98,39 @@
     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
       <a class="page-link" href="{{ url_for('order_payments', page=page-1, **search_params) }}">Previous</a>
     </li>
+
     <li class="page-item disabled">
-      <span class="page-link">Page {{ page }} of {{ total_pages }}</span>
+      <span class="page-link">
+        Page {{ page }} of {{ total_pages }}
+      </span>
     </li>
+
     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
       <a class="page-link" href="{{ url_for('order_payments', page=page+1, **search_params) }}">Next</a>
     </li>
+
+    {% if total_pages > 1 %}
+    <li class="page-item" style="margin-left: 20px;">
+      <form class="form-inline" onsubmit="jumpToPage(event)">
+        <input type="number" class="form-control" id="page-jump-input" min="1" max="{{ total_pages }}" value="{{ page }}" style="width: 80px;">
+        <button type="submit" class="btn btn-primary ml-1">Go</button>
+      </form>
+    </li>
+    {% endif %}
   </ul>
 </nav>
+
+<script>
+function jumpToPage(event) {
+  event.preventDefault();
+  const pageNum = document.getElementById('page-jump-input').value;
+  if (pageNum) {
+    const currentUrl = new URL(window.location.href);
+    currentUrl.searchParams.set('page', pageNum);
+    window.location.href = currentUrl.toString();
+  }
+}
+</script>
 {% endif %}
 
 {% endblock %}
